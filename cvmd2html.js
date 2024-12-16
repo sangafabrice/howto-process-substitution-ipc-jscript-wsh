@@ -1,6 +1,6 @@
 /**
  * @file Launches the shortcut target PowerShell script with the selected markdown as an argument.
- * @version 0.0.1.0
+ * @version 0.0.1.17
  */
 
 // #region: header of utils.js
@@ -35,17 +35,6 @@ var Package = getPackage();
 var Param = getParameters();
 
 /** The application execution. */
-if (Param.RunLink) {
-  /** @constant */
-  var WINDOW_STYLE_HIDDEN = 0;
-  /** @constant */
-  var WAIT_ON_RETURN = true;
-  Package.IconLink.Create();
-  WshShell.Run(format('"{0}"', Package.IconLink.Path), WINDOW_STYLE_HIDDEN, WAIT_ON_RETURN)
-  Package.IconLink.Delete();
-  quit(0);
-}
-
 if (Param.Markdown) {
   // #region: process.js
   // Process type definition.
@@ -131,7 +120,8 @@ if (Param.Markdown) {
   /** @constant */
   var CMD_LINE_FORMAT = '"{0}" -nop -ep Bypass -w Hidden -cwa "' +
     'try {' +
-      '& $args[0] -MarkdownPath $args[1]' +
+      'Import-Module $args[0];' +
+      'cvmd2html -MarkdownPath $args[1]' +
     '} catch {' +
       'Write-Error $_.Exception.Message' +
     '}" "{1}" "{2}"';
@@ -263,24 +253,57 @@ function deleteFile(filePath) {
  */
 function popup(messageText, popupType, popupButtons) {
   /** @constant */
-  var POPUP_TITLE = 'Convert to HTML';
+  var WINDOW_STYLE_HIDDEN = 0;
   /** @constant */
-  var NO_TIMEOUT = 0;
-  /** @constant */
-  var POPUPRESULT_YES = 6;
-  /** @constant */
-  var POPUPRESULT_NO = 7;
+  var WAIT_ON_RETURN = true;
   if (!popupType) {
     popupType = POPUP_NORMAL;
   }
   if (!popupButtons) {
     popupButtons = BUTTONS_OKONLY;
   }
-  switch (WshShell.Popup(messageText, NO_TIMEOUT, POPUP_TITLE, popupType + popupButtons)) {
-    case POPUPRESULT_YES:
-      return 'Yes';
-    case POPUPRESULT_NO:
-      return 'No';
+
+  // #region: answerLog.js
+  // Manage the answer log file and content.
+
+  /** @typedef */
+  var AnswerLog = {
+    /** The answer log file path. */
+    Path: generateRandomPath('.log'),
+
+    /** Return the content of the answer log file. */
+    Read: function () {
+      /** @constant */
+      var FOR_READING = 1;
+      try {
+        var txtStream = FileSystemObject.OpenTextFile(this.Path, FOR_READING);
+        return txtStream.ReadLine();
+      } catch (e) { }
+      finally {
+        if (txtStream) {
+          txtStream.Close();
+          txtStream = null;
+        }
+      }
+    },
+
+    /** Delete the answer log file. */
+    Delete: function () {
+      deleteFile(this.Path)
+    }
+  }
+
+  // #endregion
+
+  /** @constant */
+  var CMD_LINE_FORMAT = 'C:\\Windows\\System32\\cmd.exe /d /c ""{0}" """{1}""" {2} {3} > "{4}""';
+  Package.MessageBoxLink.Create();
+  WshShell.Run(format(CMD_LINE_FORMAT, Package.MessageBoxLink.Path, messageText.replace(/"/g, "*").replace(/\n/g, "^"), popupButtons, popupType, AnswerLog.Path), WINDOW_STYLE_HIDDEN, WAIT_ON_RETURN);
+  Package.MessageBoxLink.Delete();
+  try {
+    return AnswerLog.Read();
+  } finally {
+    AnswerLog.Delete();
   }
 }
 
@@ -326,7 +349,8 @@ function getPackage() {
   var resourcePath = FileSystemObject.BuildPath(ScriptRoot, 'rsc');
 
   var pwshExePath = WshShell.RegRead(POWERSHELL_SUBKEY);
-  var pwshScriptPath = FileSystemObject.BuildPath(resourcePath, 'cvmd2html.ps1');
+  var pwshScriptPath = FileSystemObject.BuildPath(ScriptRoot, 'cvmd2html.psd1');
+  var messageBoxScriptPath = FileSystemObject.BuildPath(resourcePath, 'messageBox.ps1');
   var menuIconPath = FileSystemObject.BuildPath(resourcePath, 'menu.ico');
 
   /** @constructor @abstract */
@@ -361,7 +385,7 @@ function getPackage() {
   var createLinkFunction = function(linkArguments) {
     return function() {
       var link = WshShell.CreateShortcut(this.Path);
-      link.TargetPath = FileSystemObject.BuildPath(FileSystemObject.GetParentFolderName(WSH.FullName), 'wscript.exe');
+      link.TargetPath = pwshExePath;
       link.Arguments = linkArguments;
       link.IconLocation = menuIconPath;
       link.Save();
@@ -378,17 +402,7 @@ function getPackage() {
     MenuIconPath: menuIconPath,
 
     /** Represents an adapted link object. */
-    IconLink: createShortcutLink(createLinkFunction(
-      (function() {
-        var inputCommand = format('"{0}"', WSH.ScriptFullName);
-        var args = WSH.Arguments;
-        for (var index = 0; index < args.Count(); index++) {
-          if (!/\/RunLink:?/i.test(args(index).toLowerCase())) {
-            inputCommand += format(' "{0}"', args(index));
-          }
-        }
-        return inputCommand;
-      })()))
+    MessageBoxLink: createShortcutLink(createLinkFunction(format('-nol -noni -nop -NoProfileLoadTime -f "{0}"', messageBoxScriptPath)))
   }
 }
 
@@ -412,13 +426,8 @@ function getParameters() {
   var WshArguments = WSH.Arguments;
   var WshNamed = WshArguments.Named;
   var paramCount = WshArguments.Count();
-  var paramMarkdown = WshNamed('Markdown');
-  if (paramCount == 2 && WshNamed('RunLink') == undefined && WshNamed.Exists('RunLink')) {
-    return {
-      RunLink: true
-    }
-  }
   if (paramCount == 1) {
+    var paramMarkdown = WshNamed('Markdown');
     if (WshNamed.Exists('Markdown') && paramMarkdown && paramMarkdown.length) {
       return {
         Markdown: paramMarkdown
